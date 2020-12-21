@@ -37,9 +37,13 @@ def get_room_state(id, dynamodb=None):
         # print(response)
         return response['Item']
 
-def getReservedData(db, cursor):
-    sql = "select * from Reservation where confirmation=1 and startTime > curdate() order by startTime ASC"
-    cursor.execute(sql)
+def getReservedData(db, cursor, officeId):
+    if officeId == 0:
+        sql = "select * from Reservation where confirmation=1 and endTime > DATE_ADD(now(), interval 9 hour) order by startTime ASC"
+        cursor.execute(sql)
+    else:
+        sql = "select * from Reservation where confirmation=1 and endTime > DATE_ADD(now(), interval 9 hour) and officeId=%s order by startTime ASC"
+        cursor.execute(sql, officeId)
     rows = cursor.fetchall()
 
 
@@ -68,24 +72,26 @@ def reservateConfirmation(db, cursor, userId, code):
 
     db.commit()
 
-def setReservationState(db, cursor, userId, timetype, curTime, dt):
+def setReservationState(db, cursor, userId, timetype, curTime, dt, officeId):
     os.environ['TZ'] = "Asia/Seoul"
     time.tzset()
     cvt_dt = datetime.datetime.strptime(dt, '%Y-%m-%dT%H:%M')
     time_now = int(time.time())
     cvt2_dt = int(time.mktime(cvt_dt.timetuple()))
+    officeId = int(officeId)
     print("code", dt)
     print("now", time_now)
     print("conver time", cvt2_dt)
     print("diff", cvt2_dt - time_now)
+    print("office id", officeId)
     # check valid time
     if(cvt2_dt - time_now < 0):
         print("input time after current time")
         return 2
 
     # check reserved
-    sql = "select * from Reservation where confirmation=1 and startTime > curdate()"
-    cursor.execute(sql)
+    sql = "select * from Reservation where confirmation=1 and startTime > DATE_ADD(now(), interval 9 hour) and officeId=%s"
+    cursor.execute(sql, (officeId))
     rows = cursor.fetchall()
     for i in rows:
         reservedStartT = int(time.mktime(i['startTime'].timetuple()))
@@ -93,16 +99,27 @@ def setReservationState(db, cursor, userId, timetype, curTime, dt):
         if reservedStartT < cvt2_dt and cvt2_dt < reservedEndT:
             print("already reserved")
             return 5
-
+        if timetype == "end":
+            if reservedStartT < cvt2_dt or reservedEndT < cvt2_dt:
+                print("already reserved2")
+                return 5
     if timetype == "start":
-        sql = "insert into Reservation (userId, startTime, reservationTime) values (%s, %s, %s)"
+        sql = "insert into Reservation (userId, startTime, reservationTime, officeId, officeName) values (%s, %s, %s, %s, %s)"
         print("insert ok")
-        cursor.execute(sql, (userId, dt, curTime))
+        if officeId == 1:
+            officeName = "일리오스"
+        elif officeId == 2:
+            officeName = "도라도"
+        else:
+            officeName = "회의실3"
+        cursor.execute(sql, (userId, dt, curTime, officeId, officeName))
     elif timetype == "end":
 
         sql = "select * from Reservation where reservationTime=%s and userId=%s"
         print("check startT and endT curTime: ", curTime)
         cursor.execute(sql, (curTime, userId))
+        print("endtime insert", userId)
+        # TODO!!!!
         rows2 = cursor.fetchall()
         # print(rows2[0]['startTime'])
         print("####")
@@ -214,21 +231,36 @@ def lambda_handler(event, context):
                 if ee['message']['type'] == 'text':
                     msgCmd = ee['message']['text']
                     msgCmdSplit = msgCmd.split(" ")
-                    if msgCmd == "사용현황":
+                    if msgCmd == "사용현황" or msgCmd == "취소":
                         officesState = get_office_state(cursor, 0)
                         setUserIdToDB(db, cursor, userId)
                         for i in officesState:
                             print(i)
                             Offices.changeOfficeState(i["id"], i["state"])
                         payload['messages'].append(Offices.getJson())
-                    elif len(msgCmdSplit) == 2 and msgCmdSplit[1] == "예약":
-                        # if(msgCmdSplit[0] == "일리오스"):
-                        reservedData = getReservedData(db, cursor)
-                        ReserveMsg.setReservationShowData(reservedData)
-                        setUserState(db, cursor, userId, 1)
+                    elif msgCmd == "예약전체보기":
+                        reservedData = getReservedData(db, cursor, 0)
+                        ReserveMsg.setReservationShowData(reservedData, 0, 0) # first 0 for all office, second 0 for without end msg
                         payload['messages'].append(ReserveMsg.getReservationShowJson())
-                        ReserveMsg.changeOfficeName(msgCmdSplit[0])
+
+                    elif len(msgCmdSplit) == 2 and msgCmdSplit[1] == "예약":
+                        if(msgCmdSplit[0] == "일리오스"):
+                            reservedData = getReservedData(db, cursor, 1) # 1 for ilios
+                            ReserveMsg.changeOfficeName(msgCmdSplit[0], 1)
+                            ReserveMsg.setReservationShowData(reservedData, 1, 1) # first 1 for ilios office, and second 1 for with end Msg
+                            payload['messages'].append(ReserveMsg.getReservationShowJson())
+                        elif(msgCmdSplit[0] == "도라도"):
+                            reservedData = getReservedData(db, cursor, 2) # 2 for dorado
+                            ReserveMsg.changeOfficeName(msgCmdSplit[0], 2)
+                            ReserveMsg.setReservationShowData(reservedData, 2, 1) #first 2 for dorado office, and second 1 for with end Msg
+                            payload['messages'].append(ReserveMsg.getReservationShowJson())
+                        elif(msgCmdSplit[0] == "회의실3"):
+                            reservedData = getReservedData(db, cursor, 3) # 3 for office3
+                            ReserveMsg.changeOfficeName(msgCmdSplit[0], 3)
+                            ReserveMsg.setReservationShowData(reservedData, 3, 1) #first 3 for office3, and second 1 for with end Msg
+                            payload['messages'].append(ReserveMsg.getReservationShowJson())
                         payload['messages'].append(ReserveMsg.getReservationJson())
+                        setUserState(db, cursor, userId, 1) # set for completed
 
                     elif getUserState(db, cursor, userId) == 3:
                         reservationData = setAndGetReservationUsername(db, cursor, userId, ee['message']['text'])
@@ -244,7 +276,7 @@ def lambda_handler(event, context):
                         payload['messages'].append(
                         {
                           "type": "template",
-                          "altText": "this is a buttons template",
+                          "altText": "회의실 예약",
                           "template": {
                             "type": "buttons",
                             "title": "GS네오텍 회의실",
@@ -252,13 +284,18 @@ def lambda_handler(event, context):
                             "actions": [
                               {
                                 "type": "message",
-                                "label": "사용현황",
-                                "text": "사용현황"
+                                "label": "예약전체보기",
+                                "text": "예약전체보기"
                               },
                               {
                                 "type": "message",
                                 "label": "예약하기",
-                                "text": "예약하기"
+                                "text": "사용현황"
+                              },
+                              {
+                                "type": "uri",
+                                "label": "예약취소",
+                                "uri": "http://3.34.171.104/office/select.php"
                               }
                             ]
                           }
@@ -271,12 +308,13 @@ def lambda_handler(event, context):
             elif ee['type'] == "postback":
                 # if ee['postback']['data'] == "reservationStart" or ee['postback']['data'].split("-")[0] == "reservationEnd":
                 curTime = int(time.time())
-                if ee['postback']['data'] == "reservationStart":
+                # msgCmd.split(" ")
+                if ee['postback']['data'].split("-")[0] == "reservationStart":
                     checkState = getUserState(db, cursor, userId)
+                    officeId = ee['postback']['data'].split("-")[1]
                     if checkState == 1:
 
-
-                        ret = setReservationState(db, cursor, userId, "start", curTime, ee['postback']['params']['datetime'])
+                        ret = setReservationState(db, cursor, userId, "start", curTime, ee['postback']['params']['datetime'], officeId)
                         if ret == 1:
                             setUserState(db, cursor, userId, 2)
                             ReserveMsg.setReservationStarttimeCode(curTime)
@@ -296,9 +334,10 @@ def lambda_handler(event, context):
                         payload['messages'].append(Offices.getErrorMsgJson("something wrong"))
                         payload['messages'].append(Offices.getJson())
                 elif ee['postback']['data'].split("-")[0] == "reservationEnd":
+                    officeId = ee['postback']['data'].split("-")[1]
                     checkState = getUserState(db, cursor, userId)
                     if checkState == 2:
-                        ret = setReservationState(db, cursor, userId, "end", ee['postback']['data'].split("-")[1], ee['postback']['params']['datetime'])
+                        ret = setReservationState(db, cursor, userId, "end", ee['postback']['data'].split("-")[1], ee['postback']['params']['datetime'], officeId)
                         if ret == 1:
                             setUserState(db, cursor, userId, 3)
                             payload['messages'].append(ReserveMsg.getReservationInputUsernameJson())
@@ -317,12 +356,15 @@ def lambda_handler(event, context):
                         payload['messages'].append(Offices.getErrorMsgJson("잘못된 접근입니다. 다시 선택해주세요."))
                         payload['messages'].append(Offices.getJson())
                 elif ee['postback']['data'].split("-")[0] == "reservationConfirm":
+                    setUserState(db, cursor, userId, 0)
                     reservateConfirmation(db, cursor, userId, ee['postback']['data'].split("-")[1])
-                    reservedData = getReservedData(db, cursor)
-                    ReserveMsg.setReservationShowData(reservedData)
+                    reservedData = getReservedData(db, cursor, 0)
+                    ReserveMsg.setReservationShowData(reservedData, 0, 0) # first 0 for all office, second 0 for without end msg
                     payload['messages'].append(Offices.getErrorMsgJson("예약이 완료되었습니다!"))
                     payload['messages'].append(ReserveMsg.getReservationShowJson())
-
+                    payload['messages'].append(Offices.getJson())
+                elif ee['postback']['data'] == "reservationCancel":
+                    setUserState(db, cursor, userId, 0)
 
 
             if len(payload['messages']) > 0:
