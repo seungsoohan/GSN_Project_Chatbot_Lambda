@@ -8,6 +8,7 @@ import  os
 import boto3
 import time
 import datetime
+import random
 from MessageCarousel import MessageCarousel
 from MessageReservation import MessageReservation
 HEADER = {
@@ -21,6 +22,11 @@ password = rds_config.db_password
 db_name = rds_config.db_name
 
 
+greetingCmd = ["안녕", "반가워", "하이", "안녕하세요", "반갑", "반갑습니다", "ㅎㅇ", "hi", "hello", "GS네오텍봇", "GSN", "GS네오텍", "GS 네오텍", "지에스네오텍", "클라우드"]
+greetingMsg = ["안녕하세요 ^^ ", "환영합니다 ^^", "반갑습니다 ^^", "Hello :)"]
+
+jokeCmd = ["안녕", "반가워", "하이", "안녕하세요", "반갑", "반갑습니다", "ㅎㅇ", "hi", "hello"]
+jokeMsg = ["안녕하세요 ^^ ", "환영합니다 ^^", "반갑습니다 ^^", "Hello :)"]
 
 
 def get_room_state(id, dynamodb=None):
@@ -47,16 +53,12 @@ def getReservedData(db, cursor, officeId):
     rows = cursor.fetchall()
 
 
-    print(rows)
-
     return rows
 
 def setAndGetReservationUsername(db, cursor, userId, name):
     sql = "select * from Reservation where userId=%s order by reservationTime DESC limit 1 "
     cursor.execute(sql, (userId))
     rows = cursor.fetchall()
-    # print("~~~~~~~~~~~~~~~~~~~~~~~~~")
-    # print(rows)
     reservationTimeCode = rows[0]['reservationTime']
     sql = "update Reservation set username=%s where reservationTime=%s and userId=%s"
     cursor.execute(sql, (name, reservationTimeCode, userId))
@@ -79,33 +81,26 @@ def setReservationState(db, cursor, userId, timetype, curTime, dt, officeId):
     time_now = int(time.time())
     cvt2_dt = int(time.mktime(cvt_dt.timetuple()))
     officeId = int(officeId)
-    print("code", dt)
-    print("now", time_now)
-    print("conver time", cvt2_dt)
-    print("diff", cvt2_dt - time_now)
-    print("office id", officeId)
     # check valid time
     if(cvt2_dt - time_now < 0):
         print("input time after current time")
         return 2
 
     # check reserved
-    sql = "select * from Reservation where confirmation=1 and startTime > DATE_ADD(now(), interval 9 hour) and officeId=%s"
+    sql = "select * from Reservation where confirmation=1 and startTime > DATE_ADD(now(), interval 0 hour) and officeId=%s"
     cursor.execute(sql, (officeId))
     rows = cursor.fetchall()
     for i in rows:
         reservedStartT = int(time.mktime(i['startTime'].timetuple()))
         reservedEndT = int(time.mktime(i['endTime'].timetuple()))
+        print("search db", reservedStartT, reservedEndT)
         if reservedStartT < cvt2_dt and cvt2_dt < reservedEndT:
-            print("already reserved")
             return 5
         if timetype == "end":
             if reservedStartT < cvt2_dt or reservedEndT < cvt2_dt:
-                print("already reserved2")
                 return 5
     if timetype == "start":
         sql = "insert into Reservation (userId, startTime, reservationTime, officeId, officeName) values (%s, %s, %s, %s, %s)"
-        print("insert ok")
         if officeId == 1:
             officeName = "일리오스"
         elif officeId == 2:
@@ -116,15 +111,9 @@ def setReservationState(db, cursor, userId, timetype, curTime, dt, officeId):
     elif timetype == "end":
 
         sql = "select * from Reservation where reservationTime=%s and userId=%s"
-        print("check startT and endT curTime: ", curTime)
         cursor.execute(sql, (curTime, userId))
-        print("endtime insert", userId)
-        # TODO!!!!
+
         rows2 = cursor.fetchall()
-        # print(rows2[0]['startTime'])
-        print("####")
-        print(rows2)
-        print(time.mktime(rows2[0]['startTime'].timetuple()) )
 
         # 종료시간이 시작시간보다 작을 경우
         if int(time.mktime(rows2[0]['startTime'].timetuple()) ) > cvt2_dt :
@@ -136,12 +125,8 @@ def setReservationState(db, cursor, userId, timetype, curTime, dt, officeId):
         #good
         sql = "update Reservation set endTime=%s where reservationTime=%s and userId=%s"
         cursor.execute(sql, (dt, curTime, userId))
-        print("endtime!!!")
+
         # sql = "insert into Reservation (userId, endTime) values (%s, %s)"
-
-
-
-    # print(rows)
 
 
 
@@ -177,19 +162,14 @@ def setUserState(db, cursor, userId, state):
     db.commit()
 
 def setUserIdToDB(db, cursor, id):
-    # print(id)
     sql = "select * from User where userId=%s"
     cursor.execute(sql, id)
     rows = cursor.fetchall()
-    # print("get data!!!!!!!!")
-    # print(rows)
-    # print(len(rows))
     if len(rows) == 0:
         sql = "insert into User (userId, processStep) values (%s, %s)"
         cursor.execute(sql, (id, 0))
         db.commit()
     else:
-        # print("update!!!")
         sql = "update User set processStep=%s where userId=%s"
         cursor.execute(sql, (0, id))
         db.commit()
@@ -204,11 +184,6 @@ def lambda_handler(event, context):
         print("MySQL connect error", e)
         sys.exit()
 
-    # sql = "select * from Office"
-    # cursor.execute(sql)
-
-    # rows = cursor.fetchall()
-    # print(rows)
 
     with db.cursor(pymysql.cursors.DictCursor) as cursor:
         Offices = MessageCarousel()
@@ -216,9 +191,6 @@ def lambda_handler(event, context):
 
         # print(Offices.getJson())
         print(event)
-        # body = json.loads(event['body'])
-        #roomState = get_office_state(cursor, 1)
-        # print(roomState)
 
         for ee in event['events']:
             userId = ee['source']['userId']
@@ -236,7 +208,11 @@ def lambda_handler(event, context):
                         setUserIdToDB(db, cursor, userId)
                         for i in officesState:
                             print(i)
-                            Offices.changeOfficeState(i["id"], i["state"])
+                            timeAddDelta = datetime.timedelta(minutes= 3)
+                            if i['updateAt'] < datetime.datetime.now() - timeAddDelta:
+                                Offices.changeOfficeState(i["id"], 3) # 3 for can not find data from log
+                            else:
+                                Offices.changeOfficeState(i["id"], i["state"])
                         payload['messages'].append(Offices.getJson())
                     elif msgCmd == "예약전체보기":
                         reservedData = getReservedData(db, cursor, 0)
@@ -271,7 +247,9 @@ def lambda_handler(event, context):
                         payload['messages'].append(ReserveMsg.getReservationComfirmInfoJson())
                         payload['messages'].append(ReserveMsg.getReservationComfirmJson())
                         setUserState(db, cursor, userId, 4)
-
+                    elif msgCmd in greetingCmd:
+                        randNum = random.randrange(0,len(greetingMsg))
+                        payload['messages'].append(Offices.getErrorMsgJson(greetingMsg[randNum]))
                     else:
                         payload['messages'].append(
                         {
@@ -319,14 +297,12 @@ def lambda_handler(event, context):
                             setUserState(db, cursor, userId, 2)
                             ReserveMsg.setReservationStarttimeCode(curTime)
                             payload['messages'].append(ReserveMsg.getReservationShowEndtimeJson())
-                            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~`")
-                            print(ReserveMsg.getReservationShowEndtimeJson())
                         elif ret == 2:
                             payload['messages'].append(Offices.getErrorMsgJson("현재시간보다 이전시간은 선택할 수 없습니다"))
                         elif ret == 3:
-                            payload['messages'].append(Offices.getErrorMsgJson("예약 종료시간은 시작시간보다 작을 수 없습니다.1"))
+                            payload['messages'].append(Offices.getErrorMsgJson("예약 종료시간은 시작시간보다 작을 수 없습니다."))
                         elif ret == 5:
-                            payload['messages'].append(Offices.getErrorMsgJson("예약된 시간입니다"))
+                            payload['messages'].append(Offices.getErrorMsgJson("이미 예약된 시간입니다."))
                         else:
                             payload['messages'].append(Offices.getErrorMsgJson("알 수 없는 에러가 발생했습니다."))
                     else:
@@ -344,7 +320,7 @@ def lambda_handler(event, context):
                         elif ret == 2:
                             payload['messages'].append(Offices.getErrorMsgJson("현재시간보다 이전시간은 선택할 수 없습니다"))
                         elif ret == 3:
-                            payload['messages'].append(Offices.getErrorMsgJson("예약 종료시간은 시작시간보다 작을 수 없습니다.2"))
+                            payload['messages'].append(Offices.getErrorMsgJson("예약 종료시간은 시작시간보다 작을 수 없습니다."))
                         elif ret == 4:
                             payload['messages'].append(Offices.getErrorMsgJson("최대 예약시간은 6시간입니다."))
                         else:
