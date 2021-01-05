@@ -25,8 +25,12 @@ db_name = rds_config.db_name
 greetingCmd = ["안녕", "반가워", "하이", "안녕하세요", "반갑", "반갑습니다", "ㅎㅇ", "hi", "hello", "GS네오텍봇", "GSN", "GS네오텍", "GS 네오텍", "지에스네오텍", "클라우드"]
 greetingMsg = ["안녕하세요 ^^ ", "환영합니다 ^^", "반갑습니다 ^^", "Hello :)"]
 
-jokeCmd = ["안녕", "반가워", "하이", "안녕하세요", "반갑", "반갑습니다", "ㅎㅇ", "hi", "hello"]
-jokeMsg = ["안녕하세요 ^^ ", "환영합니다 ^^", "반갑습니다 ^^", "Hello :)"]
+jokeCmd = ["누구", "누구야", "누구냐", "너", "야", "아", "ㅋ", "ㅋㅋ", "ㅋㅋㅋ"]
+jokeMsg = ["안녕하세요 GS네오텍 봇이에요.", "환영합니다 ^^ 예약을 도와드릴게요.", "반갑습니다 ^^ 무엇을 도와드릴까요.", "Hello :) May I help you?"]
+
+showAllCmd = ["예약전체보기", "예약 전체보기", "예약전체", "전체예약", "전체 예약", "예약보여줘",
+                "예약내역", "예약 내역",
+                "예약 보여줘", "예약알려줘", "예약 알려줘", "예약현황", "예약현황 보여줘", "예약내역 보기"]
 
 
 def get_room_state(id, dynamodb=None):
@@ -42,6 +46,22 @@ def get_room_state(id, dynamodb=None):
     else:
         # print(response)
         return response['Item']
+
+def addWordToDB(db, cursor, word):
+    sql = "select * from WordsLog where word=%s"
+    cursor.execute(sql, word)
+    rows = cursor.fetchall()
+
+    if len(rows) == 0:
+        sql = "insert into WordsLog (word, createdAt, count) values (%s, DATE_ADD(now(), interval 9 hour), 1)"
+        cursor.execute(sql, (word))
+        db.commit()
+    else:
+        cnt = int(rows[0]['count'])
+        uid = int(rows[0]['id'])
+        sql = "update WordsLog set count=%s where id=%s"
+        cursor.execute(sql, (cnt+1, uid))
+        db.commit()
 
 def getReservedData(db, cursor, officeId):
     if officeId == 0:
@@ -214,7 +234,8 @@ def lambda_handler(event, context):
                             else:
                                 Offices.changeOfficeState(i["id"], i["state"])
                         payload['messages'].append(Offices.getJson())
-                    elif msgCmd == "예약전체보기":
+                    # elif msgCmd == "예약전체보기":
+                    elif msgCmd in showAllCmd:
                         reservedData = getReservedData(db, cursor, 0)
                         ReserveMsg.setReservationShowData(reservedData, 0, 0) # first 0 for all office, second 0 for without end msg
                         payload['messages'].append(ReserveMsg.getReservationShowJson())
@@ -250,7 +271,12 @@ def lambda_handler(event, context):
                     elif msgCmd in greetingCmd:
                         randNum = random.randrange(0,len(greetingMsg))
                         payload['messages'].append(Offices.getErrorMsgJson(greetingMsg[randNum]))
+                    elif msgCmd in jokeCmd:
+                        randNum = random.randrange(0,len(jokeMsg))
+                        payload['messages'].append(Offices.getErrorMsgJson(jokeMsg[randNum]))
                     else:
+                        if msgCmd != "예약관리":
+                            addWordToDB(db, cursor, msgCmd)
                         payload['messages'].append(
                         {
                           "type": "template",
